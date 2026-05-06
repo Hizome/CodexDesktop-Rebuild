@@ -113,12 +113,12 @@ function buildMac(platform) {
 
   console.log(`   [source] ${appPath}`);
 
-  // 2. Copy .app to output (use cp -a to preserve symlinks)
+  // 2. Copy .app to output (ditto preserves symlinks + resource forks)
   const outAppDir = path.join(OUT_DIR, platform);
   clearDir(outAppDir);
   const outApp = path.join(outAppDir, "Codex.app");
   console.log("   [copy] Codex.app -> out/");
-  execSync(`cp -a "${appPath}" "${outApp}"`);
+  execSync(`ditto "${appPath}" "${outApp}"`);
 
   const resourcesDir = path.join(outApp, "Contents", "Resources");
 
@@ -127,7 +127,18 @@ function buildMac(platform) {
   console.log("   [asar pack] _asar/ -> app.asar");
   execSync(`npx asar pack "${asarDir}" "${asarPath}"`);
 
-  // 4. Replace codex CLI
+  // 4. Update ASAR integrity hash in Info.plist
+  const infoPlist = path.join(outApp, "Contents", "Info.plist");
+  if (fs.existsSync(infoPlist)) {
+    updateAsarIntegrity(asarPath, infoPlist);
+  }
+
+  // 5. Strip code signature
+  console.log("   [codesign] removing signature");
+  try { execSync(`codesign --remove-signature "${outApp}"`, { stdio: "pipe" }); } catch {}
+  try { execSync(`xattr -rd com.apple.quarantine "${outApp}"`, { stdio: "pipe" }); } catch {}
+
+  // 6. Replace codex CLI
   replaceCodex(platform, resourcesDir, "codex");
 
   // 5. Create DMG
@@ -187,6 +198,31 @@ function buildWin(platform) {
 
   const sizeMB = (fs.statSync(zipPath).size / 1048576).toFixed(1);
   console.log(`   [ok] ${zipPath} (${sizeMB} MB)`);
+}
+
+// ─── ASAR integrity ─────────────────────────────────────────────
+
+function updateAsarIntegrity(asarPath, infoPlistPath) {
+  // Compute SHA256 of ASAR header (Electron verifies header hash, not full file)
+  const newHash = execSync(`node -e "
+    const fs=require('fs'),crypto=require('crypto');
+    const buf=fs.readFileSync(process.argv[1]);
+    const sz=buf.readUInt32LE(12);
+    const hdr=buf.slice(16,16+sz);
+    process.stdout.write(crypto.createHash('sha256').update(hdr).digest('hex'));
+  " "${asarPath}"`, { encoding: "utf-8" }).trim();
+
+  // Update Info.plist
+  execSync(`plutil -replace ElectronAsarIntegrity.Resources/app\\.asar.hash -string "${newHash}" "${infoPlistPath}"`, { stdio: "pipe" });
+  execSync(`plutil -replace ElectronAsarIntegrity.Resources/app\\.asar.algorithm -string "SHA256" "${infoPlistPath}"`, { stdio: "pipe" });
+
+  // Verify
+  const verify = execSync(`plutil -extract ElectronAsarIntegrity.Resources/app\\.asar.hash raw "${infoPlistPath}"`, { encoding: "utf-8" }).trim();
+  if (verify === newHash) {
+    console.log(`   [integrity] hash updated: ${newHash.slice(0, 16)}...`);
+  } else {
+    console.log(`   [!] integrity verify failed`);
+  }
 }
 
 // ─── Shared ─────────────────────────────────────────────────────
