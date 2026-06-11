@@ -343,7 +343,7 @@ function patchStandaloneAsar(asarDir) {
   if (fs.existsSync(bootstrapPath)) {
     let content = fs.readFileSync(bootstrapPath, "utf-8");
     const standaloneBootstrap =
-      "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;const __codexRebuildShellOnly=__codexRebuildStandalone&&process.env.CODEX_REBUILD_SHELL_ONLY!==`0`;if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);}";
+      "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;const __codexRebuildShellOnly=__codexRebuildStandalone&&process.env.CODEX_REBUILD_SHELL_ONLY!==`0`;if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);__codexRebuildShellOnly&&r.app.commandLine.appendSwitch(`use-mock-keychain`);}";
     content = replaceBetween(
       content,
       "i=e.o(i);",
@@ -358,7 +358,7 @@ function patchStandaloneAsar(asarDir) {
       "bootstrap app name",
     );
     const shellBranch =
-      "else if(__codexRebuildShellOnly){r.app.whenReady().then(async()=>{let e=new r.BrowserWindow({width:1120,height:760,minWidth:860,minHeight:560,title:`Codex Rebuild`,backgroundColor:`#f6f4ee`,show:!1,webPreferences:{contextIsolation:!0,nodeIntegration:!1,sandbox:!0,spellcheck:!1,devTools:!1}});e.setMenuBarVisibility(!1),e.once(`ready-to-show`,()=>e.show()),e.on(`closed`,()=>{r.app.quit()}),await e.loadFile(i.join(__dirname,`rebuild-shell.html`))})}";
+      "else if(__codexRebuildShellOnly){r.app.whenReady().then(async()=>{let e=new r.BrowserWindow({width:1120,height:760,minWidth:860,minHeight:560,title:`Codex Rebuild`,backgroundColor:`#f4f6f8`,show:!0,webPreferences:{contextIsolation:!0,nodeIntegration:!1,sandbox:!0,spellcheck:!1,devTools:!1}});e.setMenuBarVisibility(!1),e.on(`closed`,()=>{r.app.quit()}),await e.loadFile(i.join(__dirname,`rebuild-shell.html`)),e.focus()})}";
     content = replaceOnce(
       content,
       "else{let e=n.k(Q);",
