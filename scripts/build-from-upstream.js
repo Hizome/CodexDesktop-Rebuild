@@ -328,16 +328,21 @@ function replaceBetween(content, start, end, replacement, fileLabel) {
 
 function patchStandaloneAsar(asarDir) {
   const bootstrapPath = path.join(asarDir, ".vite", "build", "bootstrap.js");
+  const shellMainPath = path.join(asarDir, ".vite", "build", "rebuild-shell-main.js");
   const sharedPath = path.join(asarDir, ".vite", "build", "src-K8ZToA-n.js");
   const packagePath = path.join(asarDir, "package.json");
   const shellHtmlPath = path.join(asarDir, ".vite", "build", "rebuild-shell.html");
 
   if (fs.existsSync(packagePath)) {
     const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
+    if (pkg.main !== ".vite/build/rebuild-shell-main.js") {
+      pkg.rebuildOriginalMain = pkg.rebuildOriginalMain || pkg.main;
+      pkg.main = ".vite/build/rebuild-shell-main.js";
+    }
     if (pkg.productName !== STANDALONE_APP_NAME) {
       pkg.productName = STANDALONE_APP_NAME;
-      fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
     }
+    fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
   }
 
   if (fs.existsSync(bootstrapPath)) {
@@ -368,6 +373,7 @@ function patchStandaloneAsar(asarDir) {
     fs.writeFileSync(bootstrapPath, content);
   }
 
+  fs.writeFileSync(shellMainPath, getShellMainJs());
   fs.writeFileSync(shellHtmlPath, getShellHtml());
 
   if (fs.existsSync(sharedPath)) {
@@ -381,6 +387,123 @@ function patchStandaloneAsar(asarDir) {
   }
 
   console.log("   [identity] ASAR standalone paths patched");
+}
+
+function getShellMainJs() {
+  return `"use strict";
+
+const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+
+const APP_NAME = "Codex Rebuild";
+const CODEX_HOME = process.env.CODEX_REBUILD_HOME?.trim() || path.join(os.homedir(), ".codex-rebuild");
+
+if (process.env.CODEX_REBUILD_FULL === "1") {
+  process.env.CODEX_REBUILD_SHELL_ONLY = "0";
+  require("./bootstrap.js");
+  return;
+}
+
+process.env.CODEX_REBUILD_STANDALONE ||= "1";
+process.env.CODEX_REBUILD_SHELL_ONLY ||= "1";
+process.env.CODEX_HOME ||= CODEX_HOME;
+process.env.CODEX_SQLITE_HOME ||= path.join(CODEX_HOME, "sqlite");
+process.env.CODEX_ELECTRON_USER_DATA_PATH ||= path.join(app.getPath("appData"), APP_NAME);
+
+app.commandLine.appendSwitch("use-mock-keychain");
+app.setName(APP_NAME);
+app.setPath("userData", process.env.CODEX_ELECTRON_USER_DATA_PATH);
+
+let mainWindow = null;
+
+function installOfflineGuards() {
+  const filter = { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] };
+  session.defaultSession.webRequest.onBeforeRequest(filter, (details, callback) => {
+    callback({ cancel: true });
+  });
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+}
+
+async function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1180,
+    height: 780,
+    minWidth: 900,
+    minHeight: 600,
+    title: APP_NAME,
+    backgroundColor: "#f4f6f8",
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+      devTools: false,
+    },
+  });
+
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("file:")) return { action: "deny" };
+    shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("file:")) event.preventDefault();
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    dialog.showErrorBox(APP_NAME, \`Renderer stopped: \${details.reason}\`);
+  });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+
+  const html = fs.readFileSync(path.join(__dirname, "rebuild-shell.html"), "utf8");
+  await mainWindow.loadURL(\`data:text/html;charset=utf-8,\${encodeURIComponent(html)}\`);
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  app.whenReady().then(async () => {
+    installOfflineGuards();
+    await createWindow();
+  }).catch((error) => {
+    dialog.showErrorBox(APP_NAME, error instanceof Error ? error.message : String(error));
+    app.quit();
+  });
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow().catch((error) => {
+        dialog.showErrorBox(APP_NAME, error instanceof Error ? error.message : String(error));
+      });
+    } else if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+}
+`;
 }
 
 function getShellHtml() {
