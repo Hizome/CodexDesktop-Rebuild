@@ -326,19 +326,43 @@ function replaceBetween(content, start, end, replacement, fileLabel) {
   return `${content.slice(0, startIndex)}${replacement}${content.slice(endIndex)}`;
 }
 
+function stripRebuildShellBranch(content) {
+  const marker = "else if(__codexRebuildShellOnly){";
+  const originalStartup = "else{let e=n.k(Q);";
+  for (;;) {
+    const startIndex = content.indexOf(marker);
+    if (startIndex < 0) return content;
+    const originalStartupIndex = content.indexOf(originalStartup, startIndex);
+    if (originalStartupIndex < 0) {
+      throw new Error("Unable to strip rebuild shell branch: original startup marker not found");
+    }
+    content =
+      content.slice(0, startIndex) +
+      originalStartup +
+      content.slice(originalStartupIndex + originalStartup.length);
+  }
+}
+
+function getStandaloneBootstrap() {
+  return [
+    "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;",
+    "function __codexRebuildSendMockJson(e,t,n=200){let r=JSON.stringify(t);e.writeHead(n,{\"content-type\":\"application/json\",\"access-control-allow-origin\":\"*\",\"access-control-allow-headers\":\"*\",\"access-control-allow-methods\":\"GET,POST,OPTIONS\"}),e.end(r)}",
+    "function __codexRebuildStartMockApi(){if(globalThis.__codexRebuildMockApiServer)return;try{let e=require(`node:http`),t=()=>Date.now(),n=()=>({id:`resp_codex_rebuild_mock`,object:`response`,created_at:Math.floor(t()/1e3),status:`completed`,model:`codex-rebuild-offline`,output:[{id:`msg_codex_rebuild_mock`,type:`message`,status:`completed`,role:`assistant`,content:[{type:`output_text`,text:`Codex Rebuild is running in offline mock mode. Network model calls are disabled.`}]}],usage:{input_tokens:0,output_tokens:0,total_tokens:0}}),r=e.createServer((e,r)=>{let i=[];e.on(`data`,e=>i.push(e)),e.on(`end`,()=>{let i=e.url||`/`;if(e.method===`OPTIONS`){r.writeHead(204,{\"access-control-allow-origin\":\"*\",\"access-control-allow-headers\":\"*\",\"access-control-allow-methods\":\"GET,POST,OPTIONS\"}),r.end();return}if(i.includes(`/models`)){__codexRebuildSendMockJson(r,{object:`list`,data:[{id:`codex-rebuild-offline`,object:`model`,created:0,owned_by:`codex-rebuild`} ]});return}if(i.includes(`/chat/completions`)){__codexRebuildSendMockJson(r,{id:`chatcmpl_codex_rebuild_mock`,object:`chat.completion`,created:Math.floor(t()/1e3),model:`codex-rebuild-offline`,choices:[{index:0,message:{role:`assistant`,content:`Codex Rebuild is running in offline mock mode. Network model calls are disabled.`},finish_reason:`stop`}],usage:{prompt_tokens:0,completion_tokens:0,total_tokens:0}});return}if(i.includes(`/responses`)){__codexRebuildSendMockJson(r,n());return}__codexRebuildSendMockJson(r,{ok:!0,mock:!0})})});globalThis.__codexRebuildMockApiServer=r,r.on(`error`,()=>{globalThis.__codexRebuildMockApiServer=null}),r.listen(48333,`127.0.0.1`)}catch(e){globalThis.__codexRebuildMockApiServer=null}}",
+    "if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);process.env.CODEX_REBUILD_MOCKS||=`1`;process.env.CODEX_SPARKLE_ENABLED||=`false`;process.env.OPENAI_API_KEY||=`codex-rebuild-mock-key`;process.env.CODEX_API_BASE_URL||=`http://127.0.0.1:48333/v1`;process.env.CODEX_API_ENDPOINT||=process.env.CODEX_API_BASE_URL;process.env.CODEX_APP_SERVER_LOGIN_ISSUER||=`codex-rebuild-mock`;r.app.commandLine.appendSwitch(`use-mock-keychain`);__codexRebuildStartMockApi();}",
+  ].join("");
+}
+
 function patchStandaloneAsar(asarDir) {
   const bootstrapPath = path.join(asarDir, ".vite", "build", "bootstrap.js");
-  const shellMainPath = path.join(asarDir, ".vite", "build", "rebuild-shell-main.js");
   const sharedPath = path.join(asarDir, ".vite", "build", "src-K8ZToA-n.js");
   const packagePath = path.join(asarDir, "package.json");
-  const shellHtmlPath = path.join(asarDir, ".vite", "build", "rebuild-shell.html");
 
   if (fs.existsSync(packagePath)) {
     const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
-    if (pkg.main !== ".vite/build/rebuild-shell-main.js") {
-      pkg.rebuildOriginalMain = pkg.rebuildOriginalMain || pkg.main;
-      pkg.main = ".vite/build/rebuild-shell-main.js";
+    if (pkg.main === ".vite/build/rebuild-shell-main.js") {
+      pkg.main = pkg.rebuildOriginalMain || ".vite/build/bootstrap.js";
     }
+    delete pkg.rebuildOriginalMain;
     if (pkg.productName !== STANDALONE_APP_NAME) {
       pkg.productName = STANDALONE_APP_NAME;
     }
@@ -347,13 +371,12 @@ function patchStandaloneAsar(asarDir) {
 
   if (fs.existsSync(bootstrapPath)) {
     let content = fs.readFileSync(bootstrapPath, "utf-8");
-    const standaloneBootstrap =
-      "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;const __codexRebuildShellOnly=__codexRebuildStandalone&&process.env.CODEX_REBUILD_SHELL_ONLY!==`0`;if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);__codexRebuildShellOnly&&r.app.commandLine.appendSwitch(`use-mock-keychain`);}";
+    content = stripRebuildShellBranch(content);
     content = replaceBetween(
       content,
       "i=e.o(i);",
       "let a=require(`node:util`)",
-      `i=e.o(i);${standaloneBootstrap}`,
+      `i=e.o(i);${getStandaloneBootstrap()}`,
       "bootstrap standalone env",
     );
     content = replaceOnce(
@@ -362,19 +385,8 @@ function patchStandaloneAsar(asarDir) {
       "r.app.setName(__codexRebuildStandalone?`Codex Rebuild`:t.Zi(Q)),",
       "bootstrap app name",
     );
-    const shellBranch =
-      "else if(__codexRebuildShellOnly){r.app.whenReady().then(async()=>{let e=new r.BrowserWindow({width:1120,height:760,minWidth:860,minHeight:560,title:`Codex Rebuild`,backgroundColor:`#f4f6f8`,show:!0,webPreferences:{contextIsolation:!0,nodeIntegration:!1,sandbox:!0,spellcheck:!1,devTools:!1}});e.setMenuBarVisibility(!1),e.on(`closed`,()=>{r.app.quit()}),await e.loadFile(i.join(__dirname,`rebuild-shell.html`)),e.focus()})}";
-    content = replaceOnce(
-      content,
-      "else{let e=n.k(Q);",
-      `${shellBranch}else{let e=n.k(Q);`,
-      "shell-only startup branch",
-    );
     fs.writeFileSync(bootstrapPath, content);
   }
-
-  fs.writeFileSync(shellMainPath, getShellMainJs());
-  fs.writeFileSync(shellHtmlPath, getShellHtml());
 
   if (fs.existsSync(sharedPath)) {
     let content = fs.readFileSync(sharedPath, "utf-8");
@@ -387,343 +399,6 @@ function patchStandaloneAsar(asarDir) {
   }
 
   console.log("   [identity] ASAR standalone paths patched");
-}
-
-function getShellMainJs() {
-  return `"use strict";
-
-const { app, BrowserWindow, dialog, session, shell } = require("electron");
-const fs = require("node:fs");
-const path = require("node:path");
-const os = require("node:os");
-
-const APP_NAME = "Codex Rebuild";
-const CODEX_HOME = process.env.CODEX_REBUILD_HOME?.trim() || path.join(os.homedir(), ".codex-rebuild");
-
-if (process.env.CODEX_REBUILD_FULL === "1") {
-  process.env.CODEX_REBUILD_SHELL_ONLY = "0";
-  require("./bootstrap.js");
-  return;
-}
-
-process.env.CODEX_REBUILD_STANDALONE ||= "1";
-process.env.CODEX_REBUILD_SHELL_ONLY ||= "1";
-process.env.CODEX_HOME ||= CODEX_HOME;
-process.env.CODEX_SQLITE_HOME ||= path.join(CODEX_HOME, "sqlite");
-process.env.CODEX_ELECTRON_USER_DATA_PATH ||= path.join(app.getPath("appData"), APP_NAME);
-
-app.commandLine.appendSwitch("use-mock-keychain");
-app.setName(APP_NAME);
-app.setPath("userData", process.env.CODEX_ELECTRON_USER_DATA_PATH);
-
-let mainWindow = null;
-
-function installOfflineGuards() {
-  const filter = { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] };
-  session.defaultSession.webRequest.onBeforeRequest(filter, (details, callback) => {
-    callback({ cancel: true });
-  });
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
-  });
-}
-
-async function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
-    minWidth: 900,
-    minHeight: 600,
-    title: APP_NAME,
-    backgroundColor: "#f4f6f8",
-    show: false,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      spellcheck: false,
-      devTools: false,
-    },
-  });
-
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("file:")) return { action: "deny" };
-    shell.openExternal(url).catch(() => {});
-    return { action: "deny" };
-  });
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith("file:")) event.preventDefault();
-  });
-  mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    dialog.showErrorBox(APP_NAME, \`Renderer stopped: \${details.reason}\`);
-  });
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
-
-  const html = fs.readFileSync(path.join(__dirname, "rebuild-shell.html"), "utf8");
-  await mainWindow.loadURL(\`data:text/html;charset=utf-8,\${encodeURIComponent(html)}\`);
-  mainWindow.show();
-  mainWindow.focus();
-}
-
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-
-  app.whenReady().then(async () => {
-    installOfflineGuards();
-    await createWindow();
-  }).catch((error) => {
-    dialog.showErrorBox(APP_NAME, error instanceof Error ? error.message : String(error));
-    app.quit();
-  });
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow().catch((error) => {
-        dialog.showErrorBox(APP_NAME, error instanceof Error ? error.message : String(error));
-      });
-    } else if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-
-  app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
-  });
-}
-`;
-}
-
-function getShellHtml() {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex Rebuild</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f4f6f8;
-      --panel: #ffffff;
-      --panel-2: #edf2f5;
-      --ink: #1f2328;
-      --muted: #6b6f76;
-      --line: #cdd6dd;
-      --accent: #136f63;
-      --blue: #2b5f9e;
-      --shadow: rgba(24, 28, 34, 0.08);
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #15181a;
-        --panel: #202427;
-        --panel-2: #1a1e21;
-        --ink: #edf0f2;
-        --muted: #a1a8ae;
-        --line: #343b40;
-        --accent: #5ec6b5;
-        --blue: #7ea7db;
-        --shadow: rgba(0, 0, 0, 0.28);
-      }
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      height: 100vh;
-      overflow: hidden;
-      background: var(--bg);
-      color: var(--ink);
-      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-      letter-spacing: 0;
-    }
-    .app {
-      display: grid;
-      grid-template-columns: 248px minmax(0, 1fr);
-      height: 100vh;
-    }
-    .sidebar {
-      border-right: 1px solid var(--line);
-      background: var(--panel-2);
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-    .brand {
-      height: 56px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 0 16px;
-      border-bottom: 1px solid var(--line);
-      font-weight: 650;
-    }
-    .mark {
-      width: 22px;
-      height: 22px;
-      border-radius: 5px;
-      background: linear-gradient(135deg, var(--accent), var(--blue));
-      box-shadow: 0 4px 14px var(--shadow);
-      flex: 0 0 auto;
-    }
-    .nav {
-      padding: 10px;
-      display: grid;
-      gap: 4px;
-    }
-    .nav button {
-      height: 34px;
-      border: 0;
-      border-radius: 6px;
-      background: transparent;
-      color: var(--ink);
-      text-align: left;
-      padding: 0 10px;
-      font: inherit;
-    }
-    .nav button.active {
-      background: var(--panel);
-      box-shadow: inset 0 0 0 1px var(--line);
-    }
-    .spacer { flex: 1; }
-    .status {
-      margin: 12px;
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      color: var(--muted);
-      background: color-mix(in srgb, var(--panel) 70%, transparent);
-      font-size: 12px;
-    }
-    main {
-      min-width: 0;
-      display: grid;
-      grid-template-rows: 56px minmax(0, 1fr) 76px;
-      background: var(--panel);
-    }
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 18px;
-      border-bottom: 1px solid var(--line);
-    }
-    h1 {
-      margin: 0;
-      font-size: 15px;
-      font-weight: 650;
-    }
-    .pill {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 9px;
-      color: var(--muted);
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .workspace {
-      min-height: 0;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      background:
-        linear-gradient(var(--line) 1px, transparent 1px),
-        linear-gradient(90deg, var(--line) 1px, transparent 1px);
-      background-size: 28px 28px;
-      background-color: var(--panel);
-    }
-    .empty {
-      width: min(560px, 100%);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: color-mix(in srgb, var(--panel) 92%, transparent);
-      box-shadow: 0 16px 44px var(--shadow);
-      padding: 22px;
-    }
-    .empty h2 {
-      margin: 0 0 8px;
-      font-size: 17px;
-      font-weight: 650;
-    }
-    .empty p {
-      margin: 0;
-      color: var(--muted);
-    }
-    footer {
-      border-top: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 18px;
-      background: var(--panel);
-    }
-    .composer {
-      flex: 1;
-      min-width: 0;
-      height: 42px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      color: var(--muted);
-      padding: 0 12px;
-      background: var(--panel-2);
-    }
-    .send {
-      width: 42px;
-      height: 42px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--panel-2);
-      color: var(--muted);
-      font: inherit;
-    }
-  </style>
-</head>
-<body>
-  <div class="app">
-    <aside class="sidebar">
-      <div class="brand"><div class="mark"></div><span>Codex Rebuild</span></div>
-      <nav class="nav">
-        <button class="active">Workspace</button>
-        <button>Threads</button>
-        <button>Settings</button>
-      </nav>
-      <div class="spacer"></div>
-      <div class="status">Shell mode</div>
-    </aside>
-    <main>
-      <header>
-        <h1>Workspace</h1>
-        <div class="pill">Runtime paused</div>
-      </header>
-      <section class="workspace">
-        <div class="empty">
-          <h2>Codex Rebuild shell</h2>
-          <p>The desktop frame is running without account, update, agent, or model runtime startup.</p>
-        </div>
-      </section>
-      <footer>
-        <div class="composer">Prompt input is unavailable in shell mode</div>
-        <button class="send" aria-label="Send" disabled>&gt;</button>
-      </footer>
-    </main>
-  </div>
-</body>
-</html>
-`;
 }
 
 function replaceCodex(platform, resourcesDir, binName) {
