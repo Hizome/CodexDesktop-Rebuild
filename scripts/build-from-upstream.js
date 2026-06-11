@@ -404,13 +404,155 @@ function patchStandaloneAsar(asarDir) {
 function replaceCodex(platform, resourcesDir, binName) {
   const vendor = resolveCodexVendor(platform);
   if (vendor) {
-    const dest = path.join(resourcesDir, binName);
-    fs.copyFileSync(vendor, dest);
-    try { fs.chmodSync(dest, 0o755); } catch {}
-    console.log(`   [codex] replaced with @cometix/codex`);
+    if (platform === "win") {
+      const dest = path.join(resourcesDir, binName);
+      fs.copyFileSync(vendor, dest);
+      try { fs.chmodSync(dest, 0o755); } catch {}
+      console.log(`   [codex] replaced with @cometix/codex`);
+      return;
+    }
+
+    const realDest = path.join(resourcesDir, "codex-real");
+    fs.copyFileSync(vendor, realDest);
+    try { fs.chmodSync(realDest, 0o755); } catch {}
+    writeCodexWrapper(resourcesDir, binName);
+    console.log(`   [codex] replaced with @cometix/codex + offline account mock`);
   } else {
     console.log(`   [!] @cometix/codex not found, keeping upstream codex`);
   }
+}
+
+function writeCodexWrapper(resourcesDir, binName) {
+  const wrapperPath = path.join(resourcesDir, binName);
+  const mockJsPath = path.join(resourcesDir, "codex-app-server-mock.js");
+  fs.writeFileSync(
+    wrapperPath,
+    [
+      "#!/bin/sh",
+      'DIR=$(cd "$(dirname "$0")" && pwd)',
+      'exec "$DIR/cua_node/bin/node" "$DIR/codex-app-server-mock.js" "$@"',
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(wrapperPath, 0o755);
+  fs.writeFileSync(mockJsPath, getCodexAppServerMockJs());
+}
+
+function getCodexAppServerMockJs() {
+  return `"use strict";
+const { spawn } = require("node:child_process");
+const path = require("node:path");
+
+const realCodex = path.join(__dirname, process.platform === "win32" ? "codex-real.exe" : "codex-real");
+const args = process.argv.slice(2);
+const isAppServer = args[0] === "app-server";
+
+if (!isAppServer) {
+  const child = spawn(realCodex, args, { stdio: "inherit", env: process.env });
+  child.on("exit", (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    process.exit(code ?? 0);
+  });
+  child.on("error", (error) => {
+    console.error(error && error.stack ? error.stack : String(error));
+    process.exit(1);
+  });
+} else {
+  const child = spawn(realCodex, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+
+  const fakeAccount = {
+    email: process.env.CODEX_REBUILD_MOCK_EMAIL || "offline@codex-rebuild.local",
+    chatgptAccountId: "codex-rebuild-offline-account",
+    chatgptPlanType: "plus"
+  };
+  const fakeAccountResult = { account: fakeAccount, requiresOpenaiAuth: false };
+
+  function writeJson(message) {
+    process.stdout.write(JSON.stringify(message) + "\\n");
+  }
+
+  function notifyLoggedIn() {
+    writeJson({ method: "account/updated", params: fakeAccountResult });
+    writeJson({ method: "account/login/completed", params: { account: fakeAccount } });
+  }
+
+  function notifyAccountUpdated() {
+    writeJson({ method: "account/updated", params: fakeAccountResult });
+  }
+
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    for (;;) {
+      const newlineIndex = buffer.indexOf("\\n");
+      if (newlineIndex < 0) break;
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      handleLine(line);
+    }
+  });
+  process.stdin.on("end", () => child.stdin.end());
+
+  function forward(line) {
+    if (child.stdin.writable) child.stdin.write(line + "\\n");
+  }
+
+  function handleLine(line) {
+    if (!line.trim()) {
+      forward(line);
+      return;
+    }
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      forward(line);
+      return;
+    }
+
+    if (message && message.id != null && typeof message.method === "string") {
+      switch (message.method) {
+        case "initialize":
+          forward(line);
+          setTimeout(notifyAccountUpdated, 500);
+          return;
+        case "account/read":
+          writeJson({ id: message.id, result: fakeAccountResult });
+          return;
+        case "account/login":
+          writeJson({
+            id: message.id,
+            result: {
+              loginId: "codex-rebuild-mock-login",
+              authUrl: "http://127.0.0.1:48333/mock-login"
+            }
+          });
+          notifyLoggedIn();
+          return;
+        case "account/logout":
+          writeJson({ id: message.id, result: {} });
+          notifyLoggedIn();
+          return;
+      }
+    }
+
+    forward(line);
+  }
+
+  child.on("exit", (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    process.exit(code ?? 0);
+  });
+  child.on("error", (error) => {
+    console.error(error && error.stack ? error.stack : String(error));
+    process.exit(1);
+  });
+}
+`;
 }
 
 function getVersion(asarDir) {
