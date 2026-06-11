@@ -318,10 +318,19 @@ function replaceOnce(content, from, to, fileLabel) {
   return content.replace(from, to);
 }
 
+function replaceBetween(content, start, end, replacement, fileLabel) {
+  const startIndex = content.indexOf(start);
+  if (startIndex < 0) throw new Error(`Unable to patch ${fileLabel}: start pattern not found`);
+  const endIndex = content.indexOf(end, startIndex + start.length);
+  if (endIndex < 0) throw new Error(`Unable to patch ${fileLabel}: end pattern not found`);
+  return `${content.slice(0, startIndex)}${replacement}${content.slice(endIndex)}`;
+}
+
 function patchStandaloneAsar(asarDir) {
   const bootstrapPath = path.join(asarDir, ".vite", "build", "bootstrap.js");
   const sharedPath = path.join(asarDir, ".vite", "build", "src-K8ZToA-n.js");
   const packagePath = path.join(asarDir, "package.json");
+  const shellHtmlPath = path.join(asarDir, ".vite", "build", "rebuild-shell.html");
 
   if (fs.existsSync(packagePath)) {
     const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
@@ -334,11 +343,12 @@ function patchStandaloneAsar(asarDir) {
   if (fs.existsSync(bootstrapPath)) {
     let content = fs.readFileSync(bootstrapPath, "utf-8");
     const standaloneBootstrap =
-      "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);}";
-    content = replaceOnce(
+      "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;const __codexRebuildShellOnly=__codexRebuildStandalone&&process.env.CODEX_REBUILD_SHELL_ONLY!==`0`;if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);}";
+    content = replaceBetween(
       content,
-      "i=e.o(i);let a=require(`node:util`)",
-      `i=e.o(i);${standaloneBootstrap}let a=require(\`node:util\`)`,
+      "i=e.o(i);",
+      "let a=require(`node:util`)",
+      `i=e.o(i);${standaloneBootstrap}`,
       "bootstrap standalone env",
     );
     content = replaceOnce(
@@ -347,8 +357,18 @@ function patchStandaloneAsar(asarDir) {
       "r.app.setName(__codexRebuildStandalone?`Codex Rebuild`:t.Zi(Q)),",
       "bootstrap app name",
     );
+    const shellBranch =
+      "else if(__codexRebuildShellOnly){r.app.whenReady().then(async()=>{let e=new r.BrowserWindow({width:1120,height:760,minWidth:860,minHeight:560,title:`Codex Rebuild`,backgroundColor:`#f6f4ee`,show:!1,webPreferences:{contextIsolation:!0,nodeIntegration:!1,sandbox:!0,spellcheck:!1,devTools:!1}});e.setMenuBarVisibility(!1),e.once(`ready-to-show`,()=>e.show()),e.on(`closed`,()=>{r.app.quit()}),await e.loadFile(i.join(__dirname,`rebuild-shell.html`))})}";
+    content = replaceOnce(
+      content,
+      "else{let e=n.k(Q);",
+      `${shellBranch}else{let e=n.k(Q);`,
+      "shell-only startup branch",
+    );
     fs.writeFileSync(bootstrapPath, content);
   }
+
+  fs.writeFileSync(shellHtmlPath, getShellHtml());
 
   if (fs.existsSync(sharedPath)) {
     let content = fs.readFileSync(sharedPath, "utf-8");
@@ -361,6 +381,226 @@ function patchStandaloneAsar(asarDir) {
   }
 
   console.log("   [identity] ASAR standalone paths patched");
+}
+
+function getShellHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Rebuild</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --panel-2: #edf2f5;
+      --ink: #1f2328;
+      --muted: #6b6f76;
+      --line: #cdd6dd;
+      --accent: #136f63;
+      --blue: #2b5f9e;
+      --shadow: rgba(24, 28, 34, 0.08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15181a;
+        --panel: #202427;
+        --panel-2: #1a1e21;
+        --ink: #edf0f2;
+        --muted: #a1a8ae;
+        --line: #343b40;
+        --accent: #5ec6b5;
+        --blue: #7ea7db;
+        --shadow: rgba(0, 0, 0, 0.28);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      height: 100vh;
+    }
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: var(--panel-2);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .brand {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 650;
+    }
+    .mark {
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      background: linear-gradient(135deg, var(--accent), var(--blue));
+      box-shadow: 0 4px 14px var(--shadow);
+      flex: 0 0 auto;
+    }
+    .nav {
+      padding: 10px;
+      display: grid;
+      gap: 4px;
+    }
+    .nav button {
+      height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      padding: 0 10px;
+      font: inherit;
+    }
+    .nav button.active {
+      background: var(--panel);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+    .spacer { flex: 1; }
+    .status {
+      margin: 12px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--panel) 70%, transparent);
+      font-size: 12px;
+    }
+    main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 56px minmax(0, 1fr) 76px;
+      background: var(--panel);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 650;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .workspace {
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px);
+      background-size: 28px 28px;
+      background-color: var(--panel);
+    }
+    .empty {
+      width: min(560px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: 0 16px 44px var(--shadow);
+      padding: 22px;
+    }
+    .empty h2 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      font-weight: 650;
+    }
+    .empty p {
+      margin: 0;
+      color: var(--muted);
+    }
+    footer {
+      border-top: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 18px;
+      background: var(--panel);
+    }
+    .composer {
+      flex: 1;
+      min-width: 0;
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      color: var(--muted);
+      padding: 0 12px;
+      background: var(--panel-2);
+    }
+    .send {
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font: inherit;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark"></div><span>Codex Rebuild</span></div>
+      <nav class="nav">
+        <button class="active">Workspace</button>
+        <button>Threads</button>
+        <button>Settings</button>
+      </nav>
+      <div class="spacer"></div>
+      <div class="status">Shell mode</div>
+    </aside>
+    <main>
+      <header>
+        <h1>Workspace</h1>
+        <div class="pill">Runtime paused</div>
+      </header>
+      <section class="workspace">
+        <div class="empty">
+          <h2>Codex Rebuild shell</h2>
+          <p>The desktop frame is running without account, update, agent, or model runtime startup.</p>
+        </div>
+      </section>
+      <footer>
+        <div class="composer">Prompt input is unavailable in shell mode</div>
+        <button class="send" aria-label="Send" disabled>&gt;</button>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
+`;
 }
 
 function replaceCodex(platform, resourcesDir, binName) {
