@@ -64,5 +64,8 @@
   "codexBuildFlavor": "prod",
   "codexBuildNumber": "1272",
   "codexSparkleFeedUrl": "https://persistent.oaistatic.com/codex-app-prod/appcast.xml",
-  "codexSparklePublicKey": "rhcBvttuqDFriyNqwTQJR3L4UT1WjIK4QxtwtwusVic="
+  "codexSparklePublicKey": "rhcBvttuqDFriyNqwTQJR3L4UT1WjIK4QxtwtwusVic=",
+  "allowScripts": {
+    "electron@42.0.1": true
+  }
 }

@@ -91,7 +91,7 @@ console.log(`[start-dev] CLI Path: ${cliPath}`);
 console.log(`[start-dev] App Root: ${appEntry}`);
 
 // Launch Electron with CLI path
-const electronBin = require('electron');
+const electronBin = String(require('electron')).trim();
 const child = spawn(electronBin, [appEntry], {
   cwd: path.join(__dirname, '..'),
   stdio: 'inherit',

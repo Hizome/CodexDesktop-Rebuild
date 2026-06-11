@@ -18,6 +18,10 @@ const PROJECT_ROOT = path.resolve(__dirname, "..");
 const SRC_DIR = path.join(PROJECT_ROOT, "src");
 const OUT_DIR = path.join(PROJECT_ROOT, "out");
 
+const STANDALONE_APP_NAME = "Codex Rebuild";
+const STANDALONE_BUNDLE_ID = "com.openai.codex.rebuild";
+const STANDALONE_URL_SCHEME = "codex-rebuild";
+
 const TARGET_TRIPLE_MAP = {
   "mac-arm64": "aarch64-apple-darwin",
   "mac-x64": "x86_64-apple-darwin",
@@ -139,20 +143,22 @@ function buildMac(platform) {
   // 2. Copy .app to output (ditto preserves symlinks + resource forks)
   const outAppDir = path.join(OUT_DIR, platform);
   clearDir(outAppDir);
-  const outApp = path.join(outAppDir, "Codex.app");
-  console.log("   [copy] Codex.app -> out/");
+  const outApp = path.join(outAppDir, `${STANDALONE_APP_NAME}.app`);
+  console.log(`   [copy] Codex.app -> out/${STANDALONE_APP_NAME}.app`);
   execSync(`ditto "${appPath}" "${outApp}"`);
 
   const resourcesDir = path.join(outApp, "Contents", "Resources");
 
   // 3. Repack patched ASAR
   const asarPath = path.join(resourcesDir, "app.asar");
+  patchStandaloneAsar(asarDir);
   console.log("   [asar pack] _asar/ -> app.asar");
   execSync(`npx asar pack "${asarDir}" "${asarPath}"`);
 
   // 4. Update ASAR integrity hash in Info.plist
   const infoPlist = path.join(outApp, "Contents", "Info.plist");
   if (fs.existsSync(infoPlist)) {
+    patchMacInfoPlist(infoPlist);
     updateAsarIntegrity(asarPath, infoPlist);
   }
 
@@ -175,10 +181,10 @@ function buildMac(platform) {
 
   // 8. Create DMG
   const version = getVersion(asarDir);
-  const dmgName = `Codex-${platform}-${version}.dmg`;
+  const dmgName = `Codex-Rebuild-${platform}-${version}.dmg`;
   const dmgPath = path.join(OUT_DIR, dmgName);
   console.log(`   [dmg] ${dmgName}`);
-  execSync(`hdiutil create -volname Codex -srcfolder "${outAppDir}" -ov -format UDZO "${dmgPath}"`, { stdio: "pipe" });
+  execSync(`hdiutil create -volname "${STANDALONE_APP_NAME}" -srcfolder "${outAppDir}" -ov -format UDZO "${dmgPath}"`, { stdio: "pipe" });
   const sizeMB = (fs.statSync(dmgPath).size / 1048576).toFixed(1);
   console.log(`   [ok] ${dmgPath} (${sizeMB} MB)`);
 }
@@ -288,6 +294,74 @@ function updateAsarIntegrity(asarPath, infoPlistPath) {
 }
 
 // ─── Shared ─────────────────────────────────────────────────────
+
+function plistReplace(plistPath, keyPath, type, value) {
+  execSync(`plutil -replace "${keyPath}" -${type} "${value}" "${plistPath}"`, { stdio: "pipe" });
+}
+
+function patchMacInfoPlist(infoPlist) {
+  plistReplace(infoPlist, "CFBundleDisplayName", "string", STANDALONE_APP_NAME);
+  plistReplace(infoPlist, "CFBundleName", "string", STANDALONE_APP_NAME);
+  plistReplace(infoPlist, "BundleSigningBaseName", "string", STANDALONE_APP_NAME);
+  plistReplace(infoPlist, "CFBundleIdentifier", "string", STANDALONE_BUNDLE_ID);
+  plistReplace(infoPlist, "CrProductDirName", "string", STANDALONE_BUNDLE_ID);
+  plistReplace(infoPlist, "CFBundleURLTypes.0.CFBundleURLName", "string", STANDALONE_APP_NAME);
+  plistReplace(infoPlist, "CFBundleURLTypes.0.CFBundleURLSchemes.0", "string", STANDALONE_URL_SCHEME);
+  console.log(`   [identity] ${STANDALONE_APP_NAME} (${STANDALONE_BUNDLE_ID})`);
+}
+
+function replaceOnce(content, from, to, fileLabel) {
+  if (content.includes(to)) return content;
+  if (!content.includes(from)) {
+    throw new Error(`Unable to patch ${fileLabel}: pattern not found`);
+  }
+  return content.replace(from, to);
+}
+
+function patchStandaloneAsar(asarDir) {
+  const bootstrapPath = path.join(asarDir, ".vite", "build", "bootstrap.js");
+  const sharedPath = path.join(asarDir, ".vite", "build", "src-K8ZToA-n.js");
+  const packagePath = path.join(asarDir, "package.json");
+
+  if (fs.existsSync(packagePath)) {
+    const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
+    if (pkg.productName !== STANDALONE_APP_NAME) {
+      pkg.productName = STANDALONE_APP_NAME;
+      fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+    }
+  }
+
+  if (fs.existsSync(bootstrapPath)) {
+    let content = fs.readFileSync(bootstrapPath, "utf-8");
+    const standaloneBootstrap =
+      "const __codexRebuildStandalone=process.env.CODEX_REBUILD_STANDALONE!==`0`;if(__codexRebuildStandalone){let e=process.env.CODEX_REBUILD_HOME?.trim()||i.join(process.env.HOME||r.app.getPath(`home`),`.codex-rebuild`);process.env.CODEX_HOME||=e;process.env.CODEX_SQLITE_HOME||=i.join(e,`sqlite`);process.env.CODEX_ELECTRON_USER_DATA_PATH||=i.join(r.app.getPath(`appData`),`Codex Rebuild`);}";
+    content = replaceOnce(
+      content,
+      "i=e.o(i);let a=require(`node:util`)",
+      `i=e.o(i);${standaloneBootstrap}let a=require(\`node:util\`)`,
+      "bootstrap standalone env",
+    );
+    content = replaceOnce(
+      content,
+      "r.app.setName(t.Zi(Q)),",
+      "r.app.setName(__codexRebuildStandalone?`Codex Rebuild`:t.Zi(Q)),",
+      "bootstrap app name",
+    );
+    fs.writeFileSync(bootstrapPath, content);
+  }
+
+  if (fs.existsSync(sharedPath)) {
+    let content = fs.readFileSync(sharedPath, "utf-8");
+    const protocolFrom = "e.setAsDefaultProtocolClient(`codex`)";
+    const protocolTo = "e.setAsDefaultProtocolClient(process.env.CODEX_REBUILD_STANDALONE===`0`?`codex`:`codex-rebuild`)";
+    if (content.includes(protocolFrom) || content.includes(protocolTo)) {
+      content = replaceOnce(content, protocolFrom, protocolTo, "protocol handler");
+      fs.writeFileSync(sharedPath, content);
+    }
+  }
+
+  console.log("   [identity] ASAR standalone paths patched");
+}
 
 function replaceCodex(platform, resourcesDir, binName) {
   const vendor = resolveCodexVendor(platform);
